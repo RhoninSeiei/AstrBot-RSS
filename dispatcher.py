@@ -107,6 +107,51 @@ class FeedDispatcher:
         except Exception:
             return template
 
+    @staticmethod
+    def _resolve_messagechain_cls():
+        """优先使用 core MessageChain，避免 API re-export 差异。"""
+        try:
+            from astrbot.core.message.message_event_result import MessageChain
+
+            return MessageChain
+        except Exception:
+            from astrbot.api.message_components import MessageChain
+
+            return MessageChain
+
+    @staticmethod
+    def _resolve_plain_cls():
+        try:
+            from astrbot.api.message_components import Plain
+
+            return Plain
+        except Exception:
+            from astrbot.core.message.message_components import Plain
+
+            return Plain
+
+    def _create_message_chain(self, text_lines: list[str], link_line: str | None = None):
+        MessageChain = self._resolve_messagechain_cls()
+        Plain = self._resolve_plain_cls()
+
+        lines = [line for line in text_lines if line]
+        if link_line:
+            lines.append(link_line)
+        plain_text = "\n".join(lines)
+
+        components: list[Any] = [Plain(plain_text)]
+
+        try:
+            return MessageChain(chain=components)
+        except TypeError:
+            chain = MessageChain()
+            if hasattr(chain, "message"):
+                return chain.message(plain_text)
+            if hasattr(chain, "chain"):
+                chain.chain = components
+                return chain
+            raise
+
     def _build_text_message_chain(self, item: dict[str, Any]):
         data = self._build_render_data(item)
         template = self._config.render_card_template
@@ -118,36 +163,25 @@ class FeedDispatcher:
         link_text = self._safe_format(template.link_text, data)
         link = data["link"]
 
-        try:
-            from astrbot.api.message_components import Link, MessageChain, Plain
-
-            text_lines = [
-                line
-                for line in [
-                    title,
-                    f"来源：{source}" if source else "",
-                    f"时间：{published_at}" if published_at else "",
-                    summary,
-                ]
-                if line
-            ]
-            components: list[Any] = [Plain("\n".join(text_lines))]
-
-            if link:
-                link_label = link_text if data["truncated"] == "1" else link
-                components.append(Link(link_label, link))
-
-            return MessageChain(components)
-        except Exception as exc:  # pragma: no cover - 依赖运行环境
-            logger.warning("build text MessageChain failed, fallback to plain text: %s", exc)
-            fallback_lines = [
+        text_lines = [
+            line
+            for line in [
                 title,
-                f"来源：{source}",
-                f"时间：{published_at}",
+                f"来源：{source}" if source else "",
+                f"时间：{published_at}" if published_at else "",
                 summary,
-                f"{link_text}: {link}" if data["truncated"] == "1" and link else link,
             ]
-            return "\n".join([line for line in fallback_lines if line])
+            if line
+        ]
+
+        try:
+            link_line = ""
+            if link:
+                link_line = f"{link_text}: {link}" if data["truncated"] == "1" else link
+            return self._create_message_chain(text_lines, link_line or None)
+        except Exception as exc:  # pragma: no cover - 依赖运行环境
+            logger.error("build text MessageChain failed: %s", exc)
+            raise
 
     def _build_card_html(self, item: dict[str, Any]) -> str:
         data = self._build_render_data(item)
@@ -212,24 +246,30 @@ class FeedDispatcher:
                 logger.warning("event.image_result failed, fallback to image_result: %s", exc)
         return image_result
 
-    async def dispatch(self, item: dict) -> None:
+    async def dispatch(self, item: dict) -> int:
         origins = self._resolve_origins(item)
         if not origins:
             logger.warning("skip dispatch: no available targets for item=%s", item)
-            return
+            return 0
 
         if self._config.render_mode == "image":
             payload = await self._build_image_payload(item)
         else:
-            chain = self._build_text_message_chain(item)
+            try:
+                chain = self._build_text_message_chain(item)
+            except Exception:
+                return 0
             payload = self._as_chain_result_if_possible(item, chain)
 
+        success_count = 0
         for unified_msg_origin in origins:
             try:
                 await self.context.send_message(unified_msg_origin, payload)
+                success_count += 1
             except Exception as exc:
                 logger.error(
                     "主动消息发送失败 origin=%s: %s。若当前平台不支持主动消息，请在支持的会话渠道配置 target。",
                     unified_msg_origin,
                     exc,
                 )
+        return success_count
