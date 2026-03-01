@@ -11,6 +11,7 @@ from config import JobConfig, RSSConfig
 from dispatcher import FeedDispatcher
 from fetcher import FeedFetcher
 from parser import FeedParser
+from pipeline import FeedPipeline
 from storage import FeedStorage
 
 
@@ -35,12 +36,14 @@ class RSSScheduler:
         parser: FeedParser,
         dispatcher: FeedDispatcher,
         storage: FeedStorage,
+        pipeline: FeedPipeline | None = None,
     ) -> None:
         self._config = config
         self._fetcher = fetcher
         self._parser = parser
         self._dispatcher = dispatcher
         self._storage = storage
+        self._pipeline = pipeline
         self._job_tasks: dict[str, asyncio.Task] = {}
         self._job_locks: dict[str, asyncio.Lock] = {}
         self._job_results: dict[str, JobExecutionResult] = {}
@@ -192,6 +195,8 @@ class RSSScheduler:
 
                     event_item = dict(item)
                     event_item.setdefault("job_id", job.id)
+                    if self._pipeline is not None:
+                        event_item = await self._pipeline.process(event_item)
                     await self._dispatcher.dispatch(event_item)
                     await self._storage.mark_seen(item_id)
                     pushed_count += 1

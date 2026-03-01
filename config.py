@@ -42,6 +42,10 @@ class RSSConfig:
     feeds: list[FeedConfig]
     targets: list[TargetConfig]
     jobs: list[JobConfig]
+    llm_enabled: bool = False
+    llm_profile: str = "rss_enrich"
+    max_input_chars: int = 2000
+    timeout: int = 15
 
     @property
     def poll_interval_seconds(self) -> int:
@@ -89,7 +93,15 @@ class RSSConfig:
             )
             for item in runtime_conf.get("jobs", [])
         ]
-        config = cls(feeds=feeds, targets=targets, jobs=jobs)
+        config = cls(
+            feeds=feeds,
+            targets=targets,
+            jobs=jobs,
+            llm_enabled=bool(runtime_conf.get("llm_enabled", False)),
+            llm_profile=str(runtime_conf.get("llm_profile", "rss_enrich")).strip() or "rss_enrich",
+            max_input_chars=int(runtime_conf.get("max_input_chars", 2000)),
+            timeout=int(runtime_conf.get("timeout", 15)),
+        )
         config.validate()
         return config
 
@@ -121,6 +133,14 @@ class RSSConfig:
                 raise ConfigValidationError(
                     f"targets[{target.id}] 需要 unified_msg_origin 或平台会话标识"
                 )
+
+
+        if self.max_input_chars <= 0:
+            raise ConfigValidationError("max_input_chars 必须 > 0")
+        if self.timeout <= 0:
+            raise ConfigValidationError("timeout 必须 > 0")
+        if self.llm_enabled and not self.llm_profile:
+            raise ConfigValidationError("llm_enabled=true 时 llm_profile 不能为空")
 
         for job in self.jobs:
             if not job.id:

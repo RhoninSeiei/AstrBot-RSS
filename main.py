@@ -5,6 +5,7 @@ from config import RSSConfig
 from dispatcher import FeedDispatcher
 from fetcher import FeedFetcher
 from parser import FeedParser
+from pipeline import FeedPipeline
 from scheduler import RSSScheduler
 from storage import FeedStorage
 
@@ -24,6 +25,7 @@ class RSSPlugin(Star, RSSCommands):
             delete_kv_data=getattr(self, "delete_kv_data", None),
         )
         dispatcher = FeedDispatcher(context=context, config=config)
+        pipeline = FeedPipeline(context=context, config=config)
 
         self.scheduler = RSSScheduler(
             config=config,
@@ -31,6 +33,7 @@ class RSSPlugin(Star, RSSCommands):
             parser=parser,
             dispatcher=dispatcher,
             storage=storage,
+            pipeline=pipeline,
         )
 
     async def initialize(self):
