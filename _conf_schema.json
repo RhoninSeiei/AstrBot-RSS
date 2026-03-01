@@ -58,10 +58,11 @@
       "default": [],
       "items": {
         "type": "object",
-        "additionalProperties": true,
+        "additionalProperties": false,
         "required": [
           "id",
-          "platform"
+          "platform",
+          "unified_msg_origin"
         ],
         "properties": {
           "id": {
@@ -77,30 +78,14 @@
           "unified_msg_origin": {
             "type": "string",
             "default": "",
-            "description": "AstrBot 统一会话标识；也可使用平台特有会话字段"
+            "description": "AstrBot 统一会话标识；也可使用平台特有会话字段",
+            "minLength": 1
           },
           "enabled": {
             "type": "boolean",
             "default": true
           }
-        },
-        "anyOf": [
-          {
-            "required": [
-              "unified_msg_origin"
-            ]
-          },
-          {
-            "required": [
-              "session_id"
-            ]
-          },
-          {
-            "required": [
-              "chat_id"
-            ]
-          }
-        ]
+        }
       }
     },
     "jobs": {
@@ -139,7 +124,8 @@
           "cron": {
             "type": "string",
             "default": "",
-            "description": "cron 表达式，和 interval_seconds 至少其一"
+            "description": "cron 表达式，和 interval_seconds 至少其一",
+            "minLength": 1
           },
           "interval_seconds": {
             "type": "integer",
