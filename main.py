@@ -1,3 +1,4 @@
+from astrbot.api import logger
 from astrbot.api.star import Context, Star, register
 
 from .commands import RSSCommands
@@ -12,10 +13,11 @@ from .storage import FeedStorage
 
 @register("astrbot_rss", "AstrBot-RSS", "RSS 订阅抓取与推送插件", "0.2.0")
 class RSSPlugin(Star, RSSCommands):
-    def __init__(self, context: Context):
-        super().__init__(context)
+    def __init__(self, context: Context, config=None):
+        super().__init__(context, config)
 
-        config = RSSConfig.from_context(context)
+        runtime_source = config if config is not None else context
+        parsed_config = RSSConfig.from_context(runtime_source)
         parser = FeedParser()
         storage = FeedStorage(
             plugin_name="astrbot_rss",
@@ -23,12 +25,12 @@ class RSSPlugin(Star, RSSCommands):
             put_kv_data=getattr(self, "put_kv_data", None),
             delete_kv_data=getattr(self, "delete_kv_data", None),
         )
-        fetcher = FeedFetcher(config=config, storage=storage)
-        dispatcher = FeedDispatcher(context=context, config=config)
-        pipeline = FeedPipeline(context=context, config=config)
+        fetcher = FeedFetcher(config=parsed_config, storage=storage)
+        dispatcher = FeedDispatcher(context=context, config=parsed_config)
+        pipeline = FeedPipeline(context=context, config=parsed_config)
 
         self.scheduler = RSSScheduler(
-            config=config,
+            config=parsed_config,
             fetcher=fetcher,
             parser=parser,
             dispatcher=dispatcher,
@@ -38,6 +40,12 @@ class RSSPlugin(Star, RSSCommands):
 
     async def initialize(self):
         """插件初始化：仅做资源编排（启动调度器）。"""
+        logger.info(
+            "RSS plugin init: feeds=%s targets=%s jobs=%s",
+            len(self.scheduler.config.feeds),
+            len(self.scheduler.config.targets),
+            len(self.scheduler.config.jobs),
+        )
         await self.scheduler.start()
 
     async def terminate(self):

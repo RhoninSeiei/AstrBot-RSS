@@ -1,5 +1,8 @@
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
+import logging
+
+logger = logging.getLogger("astrbot_rss")
 
 
 class ConfigValidationError(ValueError):
@@ -70,9 +73,13 @@ class RSSConfig:
         return min(enabled_intervals, default=300)
 
     @classmethod
-    def from_context(cls, context) -> "RSSConfig":
-        """从 AstrBot 上下文中加载配置并进行完整性校验。"""
-        runtime_conf = getattr(context, "config", {}) or {}
+    def from_context(cls, context_or_config) -> "RSSConfig":
+        """从 AstrBot 上下文或插件配置对象中加载配置并进行完整性校验。"""
+        runtime_conf = cls._resolve_runtime_conf(context_or_config)
+        feeds_raw = cls._normalize_collection(runtime_conf.get("feeds", []))
+        targets_raw = cls._normalize_collection(runtime_conf.get("targets", []))
+        jobs_raw = cls._normalize_collection(runtime_conf.get("jobs", []))
+
         feeds = [
             FeedConfig(
                 id=str(item.get("id", "")).strip(),
@@ -82,7 +89,7 @@ class RSSConfig:
                 enabled=bool(item.get("enabled", True)),
                 timeout=int(item.get("timeout", 10)),
             )
-            for item in runtime_conf.get("feeds", [])
+            for item in feeds_raw
         ]
         targets = [
             TargetConfig(
@@ -91,20 +98,22 @@ class RSSConfig:
                 unified_msg_origin=str(item.get("unified_msg_origin", "")).strip(),
                 enabled=bool(item.get("enabled", True)),
             )
-            for item in runtime_conf.get("targets", [])
+            for item in targets_raw
         ]
         jobs = [
             JobConfig(
                 id=str(item.get("id", "")).strip(),
-                feed_ids=[str(fid).strip() for fid in item.get("feed_ids", [])],
-                target_ids=[str(tid).strip() for tid in item.get("target_ids", [])],
+                feed_ids=cls._normalize_id_list(item.get("feed_ids", [])),
+                target_ids=cls._normalize_id_list(item.get("target_ids", [])),
                 cron=str(item.get("cron", "")).strip(),
                 interval_seconds=int(item.get("interval_seconds", 0) or 0),
                 batch_size=int(item.get("batch_size", 10)),
                 enabled=bool(item.get("enabled", True)),
             )
-            for item in runtime_conf.get("jobs", [])
+            for item in jobs_raw
         ]
+
+        jobs = cls._build_implicit_job_if_needed(feeds, targets, jobs)
         config = cls(
             feeds=feeds,
             targets=targets,
@@ -142,6 +151,105 @@ class RSSConfig:
         )
         config.validate()
         return config
+
+
+    @staticmethod
+    def _resolve_runtime_conf(context_or_config) -> dict:
+        """兼容 Star(context, config) 注入与旧式 context.config 读取。"""
+        if isinstance(context_or_config, dict):
+            return context_or_config
+
+        plugin_like_keys = {"feeds", "targets", "jobs", "render_mode", "llm_enabled"}
+        if hasattr(context_or_config, "get"):
+            try:
+                if any(context_or_config.get(key) is not None for key in plugin_like_keys):
+                    return context_or_config
+            except Exception:
+                pass
+
+        return getattr(context_or_config, "config", {}) or {}
+
+    @staticmethod
+    def _normalize_collection(value) -> list[dict]:
+        """兼容 AstrBot 配置面板与手工 JSON 的多种写法，统一为 list[dict]。"""
+        if isinstance(value, list):
+            result: list[dict] = []
+            for item in value:
+                unpacked = RSSConfig._extract_collection_item(item)
+                if isinstance(unpacked, dict):
+                    result.append(unpacked)
+            return result
+        if isinstance(value, dict):
+            dict_values = list(value.values())
+            if dict_values and all(isinstance(item, list) for item in dict_values):
+                # 兼容 template_list 按模板分组序列化：{"job": [{...}]}
+                merged: list[dict] = []
+                for items in dict_values:
+                    merged.extend(RSSConfig._normalize_collection(items))
+                return merged
+
+            result: list[dict] = []
+            for item in dict_values:
+                unpacked = RSSConfig._extract_collection_item(item)
+                if isinstance(unpacked, dict):
+                    result.append(unpacked)
+            return result
+        return []
+
+    @staticmethod
+    def _normalize_id_list(value) -> list[str]:
+        """兼容 list 或逗号/换行分隔字符串。"""
+        if isinstance(value, list):
+            return [str(v).strip() for v in value if str(v).strip()]
+        if isinstance(value, str):
+            text = value.replace("\n", ",")
+            return [part.strip() for part in text.split(",") if part.strip()]
+        return []
+
+    @staticmethod
+    def _extract_collection_item(item):
+        """把 template_list 条目的包装结构（data/value）解包成字段字典。"""
+        if not isinstance(item, dict):
+            return None
+        if "data" in item and isinstance(item["data"], dict):
+            merged = dict(item["data"])
+            for key in ("__template_key", "template"):
+                if key in item and key not in merged:
+                    merged[key] = item[key]
+            return merged
+        if "value" in item and isinstance(item["value"], dict):
+            merged = dict(item["value"])
+            for key in ("__template_key", "template"):
+                if key in item and key not in merged:
+                    merged[key] = item[key]
+            return merged
+        return item
+
+    @staticmethod
+    def _build_implicit_job_if_needed(
+        feeds: list[FeedConfig],
+        targets: list[TargetConfig],
+        jobs: list[JobConfig],
+    ) -> list[JobConfig]:
+        """当仅配置了 feeds/targets 而未配置 jobs 时，自动生成一个默认任务。"""
+        if jobs:
+            return jobs
+
+        enabled_feeds = [feed.id for feed in feeds if feed.enabled and feed.id]
+        enabled_targets = [target.id for target in targets if target.enabled and target.id]
+        if not enabled_feeds or not enabled_targets:
+            return jobs
+
+        return [
+            JobConfig(
+                id="default",
+                feed_ids=enabled_feeds,
+                target_ids=enabled_targets,
+                interval_seconds=300,
+                batch_size=10,
+                enabled=True,
+            )
+        ]
 
     def validate(self) -> None:
         self._validate_unique_ids("feed", [feed.id for feed in self.feeds])
