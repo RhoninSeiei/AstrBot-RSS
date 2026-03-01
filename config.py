@@ -73,9 +73,12 @@ class RSSConfig:
         return min(enabled_intervals, default=300)
 
     @classmethod
-    def from_context(cls, context) -> "RSSConfig":
-        """从 AstrBot 上下文中加载配置并进行完整性校验。"""
-        runtime_conf = getattr(context, "config", {}) or {}
+    def from_context(cls, context_or_config) -> "RSSConfig":
+        """从 AstrBot 上下文或插件配置对象加载配置并进行完整性校验。"""
+        if isinstance(context_or_config, dict):
+            runtime_conf = context_or_config
+        else:
+            runtime_conf = getattr(context_or_config, "config", {}) or {}
         feeds_raw = cls._normalize_collection(runtime_conf.get("feeds", []))
         targets_raw = cls._normalize_collection(runtime_conf.get("targets", []))
         jobs_raw = cls._normalize_collection(runtime_conf.get("jobs", []))
@@ -160,6 +163,16 @@ class RSSConfig:
         if isinstance(value, dict):
             # 兼容错误配置为对象映射的情况：{"id1": {...}, "id2": {...}}
             return [item for item in value.values() if isinstance(item, dict)]
+        return []
+
+    @staticmethod
+    def _normalize_id_list(value) -> list[str]:
+        """兼容 list 或逗号/换行分隔字符串。"""
+        if isinstance(value, list):
+            return [str(v).strip() for v in value if str(v).strip()]
+        if isinstance(value, str):
+            text = value.replace("\n", ",")
+            return [part.strip() for part in text.split(",") if part.strip()]
         return []
 
     @staticmethod
